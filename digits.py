@@ -1,86 +1,98 @@
-import pickle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import cross_validate
 import seaborn as sns
-import pandas as pd
 
-def load_data(filename):
-    """Load and normalize digit data from CSV"""
-    data = np.loadtxt(filename, delimiter=',')
-    X = data[:, :-1]
-    y = data[:, -1].astype(int)
-    
-    # Normalize pixel values to [0, 1]
-    X = X / 255.0
-    
-    return X, y
+class DigitCNN(nn.Module):
+    """Convolutional Neural Network for digit recognition"""
+    def __init__(self):
+        super(DigitCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
+        self.dropout = nn.Dropout(0.25)
+        
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))
+        x = self.pool(torch.relu(self.conv2(x)))
+        x = x.view(-1, 64 * 7 * 7)
+        x = self.dropout(torch.relu(self.fc1(x)))
+        x = self.fc2(x)
+        return x
 
-def visualize_samples(X, y, n_samples=10):
-    """Display sample digits from dataset"""
-    fig, axes = plt.subplots(2, 5, figsize=(12, 5))
-    fig.suptitle('Sample Handwritten Digits')
+def train_model(train_loader, val_loader, epochs=10):
+    """Train CNN with validation"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
     
-    for i, ax in enumerate(axes.flat):
-        # Reshape flat array to 28x28 image
-        img = X[i].reshape(28, 28)
-        ax.imshow(img, cmap='gray')
-        ax.set_title(f'Label: {int(y[i])}')
-        ax.axis('off')
+    model = DigitCNN().to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    train_losses = []
+    val_accuracies = []
+    
+    for epoch in range(epochs):
+        # Training
+        model.train()
+        running_loss = 0.0
+        
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+        
+        avg_loss = running_loss / len(train_loader)
+        train_losses.append(avg_loss)
+        
+        # Validation
+        model.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        
+        val_acc = 100 * correct / total
+        val_accuracies.append(val_acc)
+        
+        print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}, Val Acc: {val_acc:.2f}%")
+    
+    # Plot training curves
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    
+    ax1.plot(train_losses)
+    ax1.set_title('Training Loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    
+    ax2.plot(val_accuracies)
+    ax2.set_title('Validation Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy (%)')
     
     plt.tight_layout()
-    plt.savefig('sample_digits.png')
-    print("✓ Saved sample visualizations to 'sample_digits.png'")
-
-def train_model_with_validation(X_train, y_train):
-    """Train model with cross-validation"""
-    print("\n🔄 Training model with cross-validation...")
+    plt.savefig('training_curves.png')
+    print("✓ Saved training curves")
     
-    # Try multiple architectures
-    architectures = [
-        (50,),
-        (100,),
-        (100, 50),
-        (128, 64, 32)
-    ]
-    
-    best_model = None
-    best_score = 0
-    best_arch = None
-    
-    for arch in architectures:
-        model = MLPClassifier(
-            hidden_layer_sizes=arch,
-            max_iter=500,
-            random_state=42,
-            early_stopping=True,
-            validation_fraction=0.1
-        )
-        
-        # Cross-validation
-        cv_results = cross_validate(
-            model, X_train, y_train, 
-            cv=5, 
-            scoring='accuracy',
-            return_train_score=True
-        )
-        
-        mean_score = cv_results['test_score'].mean()
-        print(f"Architecture {arch}: {mean_score:.4f} (+/- {cv_results['test_score'].std():.4f})")
-        
-        if mean_score > best_score:
-            best_score = mean_score
-            best_arch = arch
-            best_model = model
-    
-    print(f"\n✓ Best architecture: {best_arch} with CV accuracy: {best_score:.4f}")
-    
-    # Train final model on all training data
-    best_model.fit(X_train, y_train)
-    
-    return best_model, best_arch, best_score
+    return model
 
 def evaluate_model(model, X_test, y_test):
     """Comprehensive model evaluation"""
